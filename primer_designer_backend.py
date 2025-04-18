@@ -15,7 +15,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-Entrez.email = "your_email@example.com"  # 실제 이메일로 바꾸세요
+Entrez.email = "your_email@example.com"
 
 PREFERRED_CODON = {
     "A": "GCC", "R": "CGT", "N": "AAC", "D": "GAC", "C": "TGC",
@@ -36,6 +36,9 @@ def calc_tm(seq: str) -> float:
     at = seq.count("A") + seq.count("T")
     gc = seq.count("G") + seq.count("C")
     return 2 * at + 4 * gc
+
+def highlight_specific_position(sequence: str, target: str, position: int) -> str:
+    return sequence[:position] + f"<b style='color:red'>{target}</b>" + sequence[position + len(target):]
 
 def get_nm_from_np(np_id: str) -> str:
     url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi"
@@ -75,43 +78,34 @@ def design_primer(cds: str, protein_seq: str, mutation: str, flank: int = 15):
 
     if pos > len(protein_seq):
         raise ValueError("변이 위치가 단백질 길이를 초과합니다.")
-
     if protein_seq[pos - 1] != orig_aa:
         raise ValueError(f"{pos}번째 아미노산은 {protein_seq[pos - 1]}이며, {orig_aa}와 일치하지 않습니다.")
 
     codon_start = (pos - 1) * 3
-    wt_codon = cds[codon_start:codon_start+3]
     new_codon = PREFERRED_CODON[new_aa.upper()]
+    original_codon = cds[codon_start:codon_start + 3]
+
     up = cds[codon_start - flank:codon_start]
     down = cds[codon_start + 3:codon_start + 3 + flank]
-
     fwd = up + new_codon + down
     rev = reverse_complement(fwd)
 
-    # 서열 하이라이트용
-    wt_protein_context = protein_seq[max(0, pos - 11): pos - 1] + f"<b>{orig_aa}</b>" + protein_seq[pos: pos + 10]
-    wt_dna_context = cds[max(0, codon_start - 30): codon_start] + f"<b>{wt_codon}</b>" + cds[codon_start + 3: codon_start + 33]
-
-    fwd_highlighted = up + f"<b>{new_codon}</b>" + down
-    rev_highlighted = reverse_complement(up + f"<b>{new_codon}</b>" + down)
+    wt_protein_context = protein_seq[max(0, pos-11): pos+10]
+    wt_dna_context = cds[max(0, codon_start-30): codon_start+33]
 
     return {
-        "forward_primer": fwd,
-        "reverse_primer": rev,
-        "mutated_codon": new_codon,
-        "mutated_rcodon": reverse_complement(new_codon),
+        "forward_primer": highlight_specific_position(fwd, new_codon, flank),
+        "reverse_primer": highlight_specific_position(rev, reverse_complement(new_codon), len(rev)-flank-3),
         "tm": round(calc_tm(fwd), 1),
         "gc_percent": round(gc_content(fwd), 1),
-        "wt_protein_context": wt_protein_context,
-        "wt_dna_context": wt_dna_context,
-        "wt_codon": wt_codon,
-        "wt_aa": orig_aa
+        "wt_protein_context": highlight_specific_position(wt_protein_context, orig_aa, 10),
+        "wt_dna_context": highlight_specific_position(wt_dna_context, original_codon, 30)
     }
 
 @app.get("/primer")
 def primer_endpoint(
     refseq_protein: str = Query(..., min_length=6),
-    mutation: str = Query(..., pattern=r"^[A-Za-z]\d+[A-Za-z*]$")
+    mutation: str = Query(...)
 ):
     try:
         cds, protein_seq = fetch_cds_and_protein(refseq_protein)
