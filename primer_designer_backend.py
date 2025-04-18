@@ -1,10 +1,11 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import re
+import requests
+from xml.etree import ElementTree
 
 app = FastAPI()
 
-# CORS 허용 (웹페이지에서 접근 가능하도록)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,20 +36,58 @@ def calc_tm(seq: str) -> float:
     gc = seq.count("G") + seq.count("C")
     return 2 * at + 4 * gc
 
-# ✅ 실제 UniProt에서 CDS를 못 가져오므로, 예시용 DNA 직접 넣기
+def get_refseq_protein_from_uniprot(uniprot_id: str) -> str:
+    url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.json"
+    r = requests.get(url)
+    if r.status_code != 200:
+        raise ValueError("UniProt ID not found in UniProt API")
+
+    data = r.json()
+    for ref in data.get("uniProtKBCrossReferences", []):
+        if ref.get("database") == "RefSeq":
+            return ref.get("id")  # ex: NP_001195054.1
+    raise ValueError("RefSeq 단백질 ID를 찾을 수 없습니다.")
+
+def get_nucleotide_id_from_protein(refseq_protein_id: str) -> str:
+    url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi"
+    params = {
+        "dbfrom": "protein",
+        "db": "nuccore",
+        "id": refseq_protein_id,
+        "retmode": "xml"
+    }
+    r = requests.get(url, params=params)
+    if r.status_code != 200:
+        raise ValueError("NCBI elink 오류 발생")
+
+    root = ElementTree.fromstring(r.content)
+    linksets = root.findall(".//LinkSetDb/Link/Id")
+    if not linksets:
+        raise ValueError("연결된 mRNA ID를 찾을 수 없습니다")
+    return linksets[0].text  # ex: 123456789
+
+def get_cds_sequence(nucleotide_id: str) -> str:
+    url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    params = {
+        "db": "nuccore",
+        "id": nucleotide_id,
+        "rettype": "fasta",
+        "retmode": "text"
+    }
+    r = requests.get(url, params=params)
+    if r.status_code != 200:
+        raise ValueError("CDS를 불러오는 데 실패했습니다")
+    lines = r.text.splitlines()
+    return "".join(line.strip() for line in lines if not line.startswith(">")).upper()
+
 def fetch_cds_from_uniprot(uniprot_id: str) -> str:
-    if uniprot_id == "P17676":
-        return (
-            "ATGGACTACAAGGACGACGATGACAAGGCCGCCATCGACTTCGCCCCGTACCTGGAGCCGCCATCCTGCCGAGCCAGCAGCAGCGAGCAGCTGGGCCCCTGCTGCCCCAGCAGCAGCAG"
-            "CCAGCGCCTGCCTGCTGCTGGAGCTGGTGCAGCGGGACGGCCTGCAGGTGGAGGGGGCCGAGCGCGCAGCGCGAGTGCAGGAGCGGGGCCGCCCTCTGGGGAGGGGGGACCCGAGGA"
-            "AGGGGGAGCGGCGGGGGCTCCGGGTGAGGGAGCCGGAGTGGAGGCGGAGGAGGAGGCGCTGGAGCCCTGGGCTGGAGCGGGGGCGGCAGCGCCGCCACCCACAGCGCCCGGGGCGAG"
-            "CGGCCCTGCTGCTGCGGGCTGCTGCCGGCGGCGGCGGCGGCGGCAGGGCGGCAGCGGCGGCAGCGGCGGCGGGCGGCGGCGGCGGCGGCGGCAGCGGCGGCAGGGCGGCGGCAGCGG"
-            "CGGCGGCGGCGGCAGCGGCGGCAGCGGCGGCGGCGGCGGCAGCGGCGGCGGCAGCGGCGGCAGCGGCGGCGGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCAG"
-            "CGGCGGCAGCGGCGGCGGCAGCGGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCGG"
-            "CAGCGGCGGCAGCGGCGGCGGCAGCGGCGGCAGCGGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGG"
-            "CAGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCGGCAGCGGCGGCGGCAGCGGCGGCAGCGGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGGCAGCGGCGG"
-        )
-    raise HTTPException(status_code=404, detail="Only P17676 is supported for now.")
+    try:
+        refseq_protein = get_refseq_protein_from_uniprot(uniprot_id)
+        nucleotide_id = get_nucleotide_id_from_protein(refseq_protein)
+        cds = get_cds_sequence(nucleotide_id)
+        return cds
+    except Exception as e:
+        raise ValueError(f"CDS fetch error: {str(e)}")
 
 def design_primer(cds: str, mutation: str, flank: int = 15):
     match = re.match(r"([A-Za-z])(\d+)([A-Za-z*])", mutation)
@@ -62,7 +101,10 @@ def design_primer(cds: str, mutation: str, flank: int = 15):
     if codon_start + 3 > len(cds):
         raise ValueError("변이 위치가 CDS 길이를 초과합니다")
 
-    new_codon = PREFERRED_CODON[new_aa.upper()]
+    new_codon = PREFERRED_CODON.get(new_aa.upper())
+    if not new_codon:
+        raise ValueError("지원되지 않는 아미노산입니다")
+
     up = cds[codon_start - flank : codon_start]
     down = cds[codon_start + 3 : codon_start + 3 + flank]
     fwd = up + new_codon + down
