@@ -92,17 +92,28 @@ def design_primer(cds: str, protein_seq: str, mutation: str, flank: int = 15):
     fwd = up + new_codon + down
     rev = reverse_complement(fwd)
 
+    # ✅ 주변 아미노산과 CDS (±10개)
+    aa_start = max(0, pos - 11)
+    aa_end = min(len(protein_seq), pos + 10)
+    context_protein = protein_seq[aa_start:aa_end]
+
+    cds_start = max(0, codon_start - 30)
+    cds_end = min(len(cds), codon_start + 33)
+    context_cds = cds[cds_start:cds_end]
+
     return {
         "forward_primer": fwd,
         "reverse_primer": rev,
         "tm": round(calc_tm(fwd), 1),
-        "gc_percent": round(gc_content(fwd), 1)
+        "gc_percent": round(gc_content(fwd), 1),
+        "context_protein": context_protein,
+        "context_cds": context_cds
     }
 
 @app.get("/primer")
 def primer_endpoint(
     refseq_protein: str = Query(..., min_length=6),
-    mutation: str = Query(..., regex=r"^[A-Za-z]\d+[A-Za-z*]$")
+    mutation: str = Query(..., pattern=r"^[A-Za-z]\d+[A-Za-z*]$")
 ):
     try:
         cds, protein_seq = fetch_cds_and_protein(refseq_protein)
