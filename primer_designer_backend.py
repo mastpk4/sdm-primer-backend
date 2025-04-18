@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 import re
 
-app = FastAPI(title="Primer Designer")
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,22 +14,14 @@ app.add_middleware(
 )
 
 CODON_TABLE = {
-    'TTT':'F','TTC':'F','TTA':'L','TTG':'L',
-    'CTT':'L','CTC':'L','CTA':'L','CTG':'L',
-    'ATT':'I','ATC':'I','ATA':'I','ATG':'M',
-    'GTT':'V','GTC':'V','GTA':'V','GTG':'V',
-    'TCT':'S','TCC':'S','TCA':'S','TCG':'S',
-    'CCT':'P','CCC':'P','CCA':'P','CCG':'P',
-    'ACT':'T','ACC':'T','ACA':'T','ACG':'T',
-    'GCT':'A','GCC':'A','GCA':'A','GCG':'A',
-    'TAT':'Y','TAC':'Y','TAA':'*','TAG':'*',
-    'CAT':'H','CAC':'H','CAA':'Q','CAG':'Q',
-    'AAT':'N','AAC':'N','AAA':'K','AAG':'K',
-    'GAT':'D','GAC':'D','GAA':'E','GAG':'E',
-    'TGT':'C','TGC':'C','TGA':'*','TGG':'W',
-    'CGT':'R','CGC':'R','CGA':'R','CGG':'R',
-    'AGT':'S','AGC':'S','AGA':'R','AGG':'R',
-    'GGT':'G','GGC':'G','GGA':'G','GGG':'G'
+    'TTT':'F','TTC':'F','TTA':'L','TTG':'L','CTT':'L','CTC':'L','CTA':'L','CTG':'L',
+    'ATT':'I','ATC':'I','ATA':'I','ATG':'M','GTT':'V','GTC':'V','GTA':'V','GTG':'V',
+    'TCT':'S','TCC':'S','TCA':'S','TCG':'S','CCT':'P','CCC':'P','CCA':'P','CCG':'P',
+    'ACT':'T','ACC':'T','ACA':'T','ACG':'T','GCT':'A','GCC':'A','GCA':'A','GCG':'A',
+    'TAT':'Y','TAC':'Y','TAA':'*','TAG':'*','CAT':'H','CAC':'H','CAA':'Q','CAG':'Q',
+    'AAT':'N','AAC':'N','AAA':'K','AAG':'K','GAT':'D','GAC':'D','GAA':'E','GAG':'E',
+    'TGT':'C','TGC':'C','TGA':'*','TGG':'W','CGT':'R','CGC':'R','CGA':'R','CGG':'R',
+    'AGT':'S','AGC':'S','AGA':'R','AGG':'R','GGT':'G','GGC':'G','GGA':'G','GGG':'G',
 }
 
 PREFERRED_CODON = {
@@ -95,7 +87,4 @@ def primer_endpoint(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {
-        "uniprot_id": uniprot_id,
-        "mutation": mutation.upper(),
-        **primer_data,
-    }
+        "uniprot_id":_
