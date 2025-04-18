@@ -1,4 +1,4 @@
-# Final backend with UniProt canonical protein matching (with traceback)
+# FastAPI: Primer Design from RefSeq NP_XXXXXX directly
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,24 +34,6 @@ def calc_tm(seq: str) -> float:
     seq = seq.upper()
     return 2 * (seq.count("A") + seq.count("T")) + 4 * (seq.count("G") + seq.count("C"))
 
-def get_uniprot_protein_seq(uniprot_id: str) -> str:
-    url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.fasta"
-    r = requests.get(url)
-    if r.status_code != 200:
-        raise ValueError("UniProt 단백질 서열을 가져올 수 없습니다.")
-    lines = r.text.strip().split("\n")
-    return ''.join(lines[1:]).strip()
-
-def get_refseq_protein_id(uniprot_id: str) -> str:
-    r = requests.get(f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.json")
-    if r.status_code != 200:
-        raise ValueError("UniProt 정보를 가져올 수 없습니다.")
-    data = r.json()
-    for ref in data.get("uniProtKBCrossReferences", []):
-        if ref.get("database") == "RefSeq":
-            return ref.get("id")
-    raise ValueError("RefSeq 단백질 ID를 찾을 수 없습니다.")
-
 def get_mrna_id_from_protein(refseq_protein_id: str) -> str:
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi"
     params = {
@@ -64,20 +46,32 @@ def get_mrna_id_from_protein(refseq_protein_id: str) -> str:
     root = ElementTree.fromstring(r.content)
     ids = root.findall(".//LinkSetDb/Link/Id")
     if not ids:
-        raise ValueError("연결된 mRNA ID가 없습니다.")
+        raise ValueError("연결된 mRNA (NM_) ID가 없습니다.")
     return ids[0].text
 
-def get_cds(nuccore_id: str) -> str:
+def get_cds(nm_id: str) -> str:
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
     params = {
         "db": "nuccore",
-        "id": nuccore_id,
+        "id": nm_id,
         "rettype": "fasta",
         "retmode": "text"
     }
     r = requests.get(url, params=params)
     lines = r.text.splitlines()
     return ''.join([l.strip() for l in lines if not l.startswith(">")]).upper()
+
+def get_protein_seq_from_np(refseq_protein_id: str) -> str:
+    url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    params = {
+        "db": "protein",
+        "id": refseq_protein_id,
+        "rettype": "fasta",
+        "retmode": "text"
+    }
+    r = requests.get(url, params=params)
+    lines = r.text.strip().split("\n")
+    return ''.join(lines[1:]).strip()
 
 def design_primer(cds: str, protein_seq: str, mutation: str, flank: int = 15):
     match = re.match(r"([A-Za-z])(\d+)([A-Za-z*])", mutation)
@@ -88,9 +82,6 @@ def design_primer(cds: str, protein_seq: str, mutation: str, flank: int = 15):
 
     trimmed_cds = cds[:len(cds) - len(cds) % 3]
     translated = str(Seq(trimmed_cds).translate())
-
-    if translated != protein_seq[:len(translated)]:
-        raise ValueError("CDS에서 번역한 단백질이 UniProt과 일치하지 않습니다.")
 
     if pos > len(translated):
         raise ValueError("단백질 길이를 초과한 위치입니다.")
@@ -115,21 +106,20 @@ def design_primer(cds: str, protein_seq: str, mutation: str, flank: int = 15):
 
 @app.get("/primer")
 def primer_endpoint(
-    uniprot_id: str = Query(...),
+    refseq_protein: str = Query(...),
     mutation: str = Query(...)
 ):
     try:
-        protein_seq = get_uniprot_protein_seq(uniprot_id)
-        refseq_protein = get_refseq_protein_id(uniprot_id)
-        mrna_id = get_mrna_id_from_protein(refseq_protein)
-        cds = get_cds(mrna_id)
+        protein_seq = get_protein_seq_from_np(refseq_protein)
+        nm_id = get_mrna_id_from_protein(refseq_protein)
+        cds = get_cds(nm_id)
         primer = design_primer(cds, protein_seq, mutation)
     except Exception as e:
         import traceback
-        traceback.print_exc()  # ✅ 로그에 에러 내용 출력
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     return {
-        "uniprot_id": uniprot_id,
+        "refseq_protein": refseq_protein,
         "mutation": mutation.upper(),
         **primer
     }
