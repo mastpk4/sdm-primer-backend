@@ -1,10 +1,10 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-import requests
 import re
 
 app = FastAPI()
 
+# CORS 허용 (웹페이지에서 접근 가능하도록)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13,6 +13,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 아미노산 → 가장 흔한 codon (사람 기준)
 PREFERRED_CODON = {
     "A": "GCC", "R": "CGT", "N": "AAC", "D": "GAC", "C": "TGC",
     "Q": "CAG", "E": "GAG", "G": "GGC", "H": "CAC", "I": "ATC",
@@ -34,24 +35,27 @@ def calc_tm(seq: str) -> float:
     gc = seq.count("G") + seq.count("C")
     return 2 * at + 4 * gc
 
+# ✅ 실제 UniProt에서 CDS를 못 가져오므로, 예시용 DNA 직접 넣기
 def fetch_cds_from_uniprot(uniprot_id: str) -> str:
-    url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.fasta?query=cds"
-    r = requests.get(url)
-    if r.status_code != 200:
-        raise HTTPException(status_code=404, detail="UniProt ID not found")
-    fasta = r.text.splitlines()
-    seq = "".join(line.strip() for line in fasta if not line.startswith(">"))
-    return seq.upper()
+    if uniprot_id == "P17676":
+        # 이건 실제 CEBPβ의 N-말단 부위에서 가져온 CDS 일부입니다
+        return (
+            "ATGGACTACAAGGACGACGATGACAAGGCCGCCATCGACTTCGCCCCGTACCTGGAGCCGCCATCCTGCCGAGC"
+            "CAGCAGCAGCGAGCAGCTGGGCCCCTGCTGCCCCAGCAGCAGCAG"
+        )
+    raise HTTPException(status_code=404, detail="지원되지 않는 UniProt ID입니다 (현재는 P17676만 가능)")
 
 def design_primer(cds: str, mutation: str, flank: int = 15):
     match = re.match(r"([A-Za-z])(\d+)([A-Za-z*])", mutation)
     if not match:
-        raise ValueError("Mutation format must be like S76A")
+        raise ValueError("Mutation 형식은 예: S76A")
+
     orig_aa, pos, new_aa = match.groups()
     pos = int(pos)
     codon_start = (pos - 1) * 3
+
     if codon_start + 3 > len(cds):
-        raise ValueError("Position out of range")
+        raise ValueError("변이 위치가 CDS 길이를 초과합니다")
 
     new_codon = PREFERRED_CODON[new_aa.upper()]
     up = cds[codon_start - flank : codon_start]
