@@ -1,13 +1,13 @@
+# Final backend with UniProt canonical protein matching
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-import re
-import requests
+import requests, re
+from Bio.Seq import Seq
 from xml.etree import ElementTree
-from Bio.Seq import Seq  # Biopython 필요
 
 app = FastAPI()
 
-# CORS 설정 (모든 도메인 허용)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,7 +16,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 아미노산 → 대표 codon (사람 기준)
 PREFERRED_CODON = {
     "A": "GCC", "R": "CGT", "N": "AAC", "D": "GAC", "C": "TGC",
     "Q": "CAG", "E": "GAG", "G": "GGC", "H": "CAC", "I": "ATC",
@@ -33,24 +32,27 @@ def gc_content(seq: str) -> float:
 
 def calc_tm(seq: str) -> float:
     seq = seq.upper()
-    at = seq.count("A") + seq.count("T")
-    gc = seq.count("G") + seq.count("C")
-    return 2 * at + 4 * gc
+    return 2 * (seq.count("A") + seq.count("T")) + 4 * (seq.count("G") + seq.count("C"))
 
-# 1. UniProt ID → RefSeq 단백질 ID
-def get_refseq_protein_from_uniprot(uniprot_id: str) -> str:
-    url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.json"
+def get_uniprot_protein_seq(uniprot_id: str) -> str:
+    url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.fasta"
     r = requests.get(url)
     if r.status_code != 200:
-        raise ValueError("UniProt ID not found")
+        raise ValueError("UniProt 단백질 서열을 가져올 수 없습니다.")
+    lines = r.text.strip().split("\n")
+    return ''.join(lines[1:]).strip()
+
+def get_refseq_protein_id(uniprot_id: str) -> str:
+    r = requests.get(f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.json")
+    if r.status_code != 200:
+        raise ValueError("UniProt 정보를 가져올 수 없습니다.")
     data = r.json()
     for ref in data.get("uniProtKBCrossReferences", []):
         if ref.get("database") == "RefSeq":
             return ref.get("id")
     raise ValueError("RefSeq 단백질 ID를 찾을 수 없습니다.")
 
-# 2. RefSeq 단백질 ID → 연결된 mRNA ID (CDS 얻기 위함)
-def get_nucleotide_id_from_protein(refseq_protein_id: str) -> str:
+def get_mrna_id_from_protein(refseq_protein_id: str) -> str:
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi"
     params = {
         "dbfrom": "protein",
@@ -60,77 +62,72 @@ def get_nucleotide_id_from_protein(refseq_protein_id: str) -> str:
     }
     r = requests.get(url, params=params)
     root = ElementTree.fromstring(r.content)
-    linksets = root.findall(".//LinkSetDb/Link/Id")
-    if not linksets:
-        raise ValueError("연결된 mRNA ID를 찾을 수 없습니다")
-    return linksets[0].text
+    ids = root.findall(".//LinkSetDb/Link/Id")
+    if not ids:
+        raise ValueError("연결된 mRNA ID가 없습니다.")
+    return ids[0].text
 
-# 3. nuccore ID → 실제 CDS FASTA 가져오기
-def get_cds_sequence(nucleotide_id: str) -> str:
+def get_cds(nuccore_id: str) -> str:
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
     params = {
         "db": "nuccore",
-        "id": nucleotide_id,
+        "id": nuccore_id,
         "rettype": "fasta",
         "retmode": "text"
     }
     r = requests.get(url, params=params)
     lines = r.text.splitlines()
-    return "".join(line.strip() for line in lines if not line.startswith(">")).upper()
+    return ''.join([l.strip() for l in lines if not l.startswith(">")]).upper()
 
-# 전체 CDS 조회 pipeline
-def fetch_cds_from_uniprot(uniprot_id: str) -> str:
-    refseq_protein = get_refseq_protein_from_uniprot(uniprot_id)
-    nucleotide_id = get_nucleotide_id_from_protein(refseq_protein)
-    cds = get_cds_sequence(nucleotide_id)
-    return cds
-
-# 프라이머 생성 핵심 함수
-def design_primer(cds: str, mutation: str, flank: int = 15):
+def design_primer(cds: str, protein_seq: str, mutation: str, flank: int = 15):
     match = re.match(r"([A-Za-z])(\d+)([A-Za-z*])", mutation)
     if not match:
-        raise ValueError("Mutation 형식은 예: S76A")
+        raise ValueError("Mutation 형식은 S76A처럼 입력해주세요.")
     orig_aa, pos, new_aa = match.groups()
     pos = int(pos)
 
-    # ✅ CDS 길이를 3의 배수로 잘라서 번역 (에러 방지)
     trimmed_cds = cds[:len(cds) - len(cds) % 3]
-    translated = str(Seq(trimmed_cds).translate(to_stop=True))
+    translated = str(Seq(trimmed_cds).translate())
+
+    if translated != protein_seq[:len(translated)]:
+        raise ValueError("CDS에서 번역한 단백질이 UniProt과 일치하지 않습니다.")
 
     if pos > len(translated):
-        raise ValueError("변이 위치가 단백질 길이를 초과합니다.")
+        raise ValueError("단백질 길이를 초과한 위치입니다.")
     if translated[pos - 1] != orig_aa.upper():
         raise ValueError(f"{pos}번째 아미노산은 {translated[pos - 1]}이며, {orig_aa}와 일치하지 않습니다.")
 
     codon_start = (pos - 1) * 3
     new_codon = PREFERRED_CODON.get(new_aa.upper())
     if not new_codon:
-        raise ValueError("지원되지 않는 아미노산입니다.")
+        raise ValueError("지원되지 않는 새로운 아미노산입니다.")
 
-    up = cds[codon_start - flank : codon_start]
-    down = cds[codon_start + 3 : codon_start + 3 + flank]
+    up = cds[codon_start - flank: codon_start]
+    down = cds[codon_start + 3: codon_start + 3 + flank]
     fwd = up + new_codon + down
     rev = reverse_complement(fwd)
     return {
         "forward_primer": fwd,
         "reverse_primer": rev,
         "tm": round(calc_tm(fwd), 1),
-        "gc_percent": round(gc_content(fwd), 1),
+        "gc_percent": round(gc_content(fwd), 1)
     }
 
-# API Endpoint
 @app.get("/primer")
 def primer_endpoint(
-    uniprot_id: str = Query(..., min_length=6, max_length=12),
-    mutation: str = Query(..., regex=r"^[A-Za-z]\d+[A-Za-z*]$")
+    uniprot_id: str = Query(...),
+    mutation: str = Query(...)
 ):
     try:
-        cds = fetch_cds_from_uniprot(uniprot_id)
-        primer_data = design_primer(cds, mutation)
+        protein_seq = get_uniprot_protein_seq(uniprot_id)
+        refseq_protein = get_refseq_protein_id(uniprot_id)
+        mrna_id = get_mrna_id_from_protein(refseq_protein)
+        cds = get_cds(mrna_id)
+        primer = design_primer(cds, protein_seq, mutation)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {
         "uniprot_id": uniprot_id,
         "mutation": mutation.upper(),
-        **primer_data
+        **primer
     }
