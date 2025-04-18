@@ -7,6 +7,7 @@ from Bio.Seq import Seq  # Biopython 필요
 
 app = FastAPI()
 
+# CORS 설정 (모든 도메인 허용)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,6 +16,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 아미노산 → 대표 codon (사람 기준)
 PREFERRED_CODON = {
     "A": "GCC", "R": "CGT", "N": "AAC", "D": "GAC", "C": "TGC",
     "Q": "CAG", "E": "GAG", "G": "GGC", "H": "CAC", "I": "ATC",
@@ -35,6 +37,7 @@ def calc_tm(seq: str) -> float:
     gc = seq.count("G") + seq.count("C")
     return 2 * at + 4 * gc
 
+# 1. UniProt ID → RefSeq 단백질 ID
 def get_refseq_protein_from_uniprot(uniprot_id: str) -> str:
     url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.json"
     r = requests.get(url)
@@ -46,6 +49,7 @@ def get_refseq_protein_from_uniprot(uniprot_id: str) -> str:
             return ref.get("id")
     raise ValueError("RefSeq 단백질 ID를 찾을 수 없습니다.")
 
+# 2. RefSeq 단백질 ID → 연결된 mRNA ID (CDS 얻기 위함)
 def get_nucleotide_id_from_protein(refseq_protein_id: str) -> str:
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi"
     params = {
@@ -61,6 +65,7 @@ def get_nucleotide_id_from_protein(refseq_protein_id: str) -> str:
         raise ValueError("연결된 mRNA ID를 찾을 수 없습니다")
     return linksets[0].text
 
+# 3. nuccore ID → 실제 CDS FASTA 가져오기
 def get_cds_sequence(nucleotide_id: str) -> str:
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
     params = {
@@ -73,12 +78,14 @@ def get_cds_sequence(nucleotide_id: str) -> str:
     lines = r.text.splitlines()
     return "".join(line.strip() for line in lines if not line.startswith(">")).upper()
 
+# 전체 CDS 조회 pipeline
 def fetch_cds_from_uniprot(uniprot_id: str) -> str:
     refseq_protein = get_refseq_protein_from_uniprot(uniprot_id)
     nucleotide_id = get_nucleotide_id_from_protein(refseq_protein)
     cds = get_cds_sequence(nucleotide_id)
     return cds
 
+# 프라이머 생성 핵심 함수
 def design_primer(cds: str, mutation: str, flank: int = 15):
     match = re.match(r"([A-Za-z])(\d+)([A-Za-z*])", mutation)
     if not match:
@@ -86,7 +93,10 @@ def design_primer(cds: str, mutation: str, flank: int = 15):
     orig_aa, pos, new_aa = match.groups()
     pos = int(pos)
 
-    translated = str(Seq(cds).translate(to_stop=True))
+    # ✅ CDS 길이를 3의 배수로 잘라서 번역 (에러 방지)
+    trimmed_cds = cds[:len(cds) - len(cds) % 3]
+    translated = str(Seq(trimmed_cds).translate(to_stop=True))
+
     if pos > len(translated):
         raise ValueError("변이 위치가 단백질 길이를 초과합니다.")
     if translated[pos - 1] != orig_aa.upper():
@@ -108,6 +118,7 @@ def design_primer(cds: str, mutation: str, flank: int = 15):
         "gc_percent": round(gc_content(fwd), 1),
     }
 
+# API Endpoint
 @app.get("/primer")
 def primer_endpoint(
     uniprot_id: str = Query(..., min_length=6, max_length=12),
