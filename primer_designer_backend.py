@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import re
 import requests
 from xml.etree import ElementTree
+from Bio.Seq import Seq  # Biopython 필요
 
 app = FastAPI()
 
@@ -14,7 +15,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 아미노산 → 가장 흔한 codon (사람 기준)
 PREFERRED_CODON = {
     "A": "GCC", "R": "CGT", "N": "AAC", "D": "GAC", "C": "TGC",
     "Q": "CAG", "E": "GAG", "G": "GGC", "H": "CAC", "I": "ATC",
@@ -23,8 +23,7 @@ PREFERRED_CODON = {
 }
 
 def reverse_complement(seq: str) -> str:
-    trans = str.maketrans("ATCGatcg", "TAGCtagc")
-    return seq.translate(trans)[::-1]
+    return str(Seq(seq).reverse_complement())
 
 def gc_content(seq: str) -> float:
     seq = seq.upper()
@@ -40,16 +39,15 @@ def get_refseq_protein_from_uniprot(uniprot_id: str) -> str:
     url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.json"
     r = requests.get(url)
     if r.status_code != 200:
-        raise ValueError("UniProt ID not found in UniProt API")
-
+        raise ValueError("UniProt ID not found")
     data = r.json()
     for ref in data.get("uniProtKBCrossReferences", []):
         if ref.get("database") == "RefSeq":
-            return ref.get("id")  # ex: NP_001195054.1
+            return ref.get("id")
     raise ValueError("RefSeq 단백질 ID를 찾을 수 없습니다.")
 
 def get_nucleotide_id_from_protein(refseq_protein_id: str) -> str:
-    url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi"
+    url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi"
     params = {
         "dbfrom": "protein",
         "db": "nuccore",
@@ -57,17 +55,14 @@ def get_nucleotide_id_from_protein(refseq_protein_id: str) -> str:
         "retmode": "xml"
     }
     r = requests.get(url, params=params)
-    if r.status_code != 200:
-        raise ValueError("NCBI elink 오류 발생")
-
     root = ElementTree.fromstring(r.content)
     linksets = root.findall(".//LinkSetDb/Link/Id")
     if not linksets:
         raise ValueError("연결된 mRNA ID를 찾을 수 없습니다")
-    return linksets[0].text  # ex: 123456789
+    return linksets[0].text
 
 def get_cds_sequence(nucleotide_id: str) -> str:
-    url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
     params = {
         "db": "nuccore",
         "id": nucleotide_id,
@@ -75,35 +70,32 @@ def get_cds_sequence(nucleotide_id: str) -> str:
         "retmode": "text"
     }
     r = requests.get(url, params=params)
-    if r.status_code != 200:
-        raise ValueError("CDS를 불러오는 데 실패했습니다")
     lines = r.text.splitlines()
     return "".join(line.strip() for line in lines if not line.startswith(">")).upper()
 
 def fetch_cds_from_uniprot(uniprot_id: str) -> str:
-    try:
-        refseq_protein = get_refseq_protein_from_uniprot(uniprot_id)
-        nucleotide_id = get_nucleotide_id_from_protein(refseq_protein)
-        cds = get_cds_sequence(nucleotide_id)
-        return cds
-    except Exception as e:
-        raise ValueError(f"CDS fetch error: {str(e)}")
+    refseq_protein = get_refseq_protein_from_uniprot(uniprot_id)
+    nucleotide_id = get_nucleotide_id_from_protein(refseq_protein)
+    cds = get_cds_sequence(nucleotide_id)
+    return cds
 
 def design_primer(cds: str, mutation: str, flank: int = 15):
     match = re.match(r"([A-Za-z])(\d+)([A-Za-z*])", mutation)
     if not match:
         raise ValueError("Mutation 형식은 예: S76A")
-
     orig_aa, pos, new_aa = match.groups()
     pos = int(pos)
+
+    translated = str(Seq(cds).translate(to_stop=True))
+    if pos > len(translated):
+        raise ValueError("변이 위치가 단백질 길이를 초과합니다.")
+    if translated[pos - 1] != orig_aa.upper():
+        raise ValueError(f"{pos}번째 아미노산은 {translated[pos - 1]}이며, {orig_aa}와 일치하지 않습니다.")
+
     codon_start = (pos - 1) * 3
-
-    if codon_start + 3 > len(cds):
-        raise ValueError("변이 위치가 CDS 길이를 초과합니다")
-
     new_codon = PREFERRED_CODON.get(new_aa.upper())
     if not new_codon:
-        raise ValueError("지원되지 않는 아미노산입니다")
+        raise ValueError("지원되지 않는 아미노산입니다.")
 
     up = cds[codon_start - flank : codon_start]
     down = cds[codon_start + 3 : codon_start + 3 + flank]
@@ -118,7 +110,7 @@ def design_primer(cds: str, mutation: str, flank: int = 15):
 
 @app.get("/primer")
 def primer_endpoint(
-    uniprot_id: str = Query(..., min_length=6, max_length=10),
+    uniprot_id: str = Query(..., min_length=6, max_length=12),
     mutation: str = Query(..., regex=r"^[A-Za-z]\d+[A-Za-z*]$")
 ):
     try:
