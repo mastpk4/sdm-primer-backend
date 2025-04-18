@@ -87,4 +87,7 @@ def primer_endpoint(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {
-        "uniprot_id":_
+        "uniprot_id": uniprot_id,
+        "mutation": mutation.upper(),
+        **primer_data
+    }
