@@ -13,17 +13,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CODON_TABLE = {
-    'TTT':'F','TTC':'F','TTA':'L','TTG':'L','CTT':'L','CTC':'L','CTA':'L','CTG':'L',
-    'ATT':'I','ATC':'I','ATA':'I','ATG':'M','GTT':'V','GTC':'V','GTA':'V','GTG':'V',
-    'TCT':'S','TCC':'S','TCA':'S','TCG':'S','CCT':'P','CCC':'P','CCA':'P','CCG':'P',
-    'ACT':'T','ACC':'T','ACA':'T','ACG':'T','GCT':'A','GCC':'A','GCA':'A','GCG':'A',
-    'TAT':'Y','TAC':'Y','TAA':'*','TAG':'*','CAT':'H','CAC':'H','CAA':'Q','CAG':'Q',
-    'AAT':'N','AAC':'N','AAA':'K','AAG':'K','GAT':'D','GAC':'D','GAA':'E','GAG':'E',
-    'TGT':'C','TGC':'C','TGA':'*','TGG':'W','CGT':'R','CGC':'R','CGA':'R','CGG':'R',
-    'AGT':'S','AGC':'S','AGA':'R','AGG':'R','GGT':'G','GGC':'G','GGA':'G','GGG':'G',
-}
-
 PREFERRED_CODON = {
     "A": "GCC", "R": "CGT", "N": "AAC", "D": "GAC", "C": "TGC",
     "Q": "CAG", "E": "GAG", "G": "GGC", "H": "CAC", "I": "ATC",
@@ -46,7 +35,7 @@ def calc_tm(seq: str) -> float:
     return 2 * at + 4 * gc
 
 def fetch_cds_from_uniprot(uniprot_id: str) -> str:
-    url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.fasta"
+    url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.fasta?query=cds"
     r = requests.get(url)
     if r.status_code != 200:
         raise HTTPException(status_code=404, detail="UniProt ID not found")
@@ -61,9 +50,9 @@ def design_primer(cds: str, mutation: str, flank: int = 15):
     orig_aa, pos, new_aa = match.groups()
     pos = int(pos)
     codon_start = (pos - 1) * 3
-    codon = cds[codon_start:codon_start+3]
-    if len(codon) != 3:
-        raise ValueError("Invalid position")
+    if codon_start + 3 > len(cds):
+        raise ValueError("Position out of range")
+
     new_codon = PREFERRED_CODON[new_aa.upper()]
     up = cds[codon_start - flank : codon_start]
     down = cds[codon_start + 3 : codon_start + 3 + flank]
