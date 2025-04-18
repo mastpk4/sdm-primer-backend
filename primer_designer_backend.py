@@ -67,6 +67,9 @@ def fetch_cds_and_protein(np_id: str):
             return str(cds_seq), protein_seq
     raise HTTPException(status_code=500, detail="CDS를 찾을 수 없습니다.")
 
+def highlight(seq: str, start: int, length: int = 3):
+    return seq[:start] + "<span class='highlight-red'>" + seq[start:start+length] + "</span>" + seq[start+length:]
+
 def design_primer(cds: str, protein_seq: str, mutation: str, flank: int = 15):
     match = re.match(r"([A-Za-z])([0-9]+)([A-Za-z*])", mutation)
     if not match:
@@ -87,27 +90,25 @@ def design_primer(cds: str, protein_seq: str, mutation: str, flank: int = 15):
     if codon_start + 3 > len(cds):
         raise ValueError("CDS에서 코돈 위치가 잘못되었습니다.")
 
+    # 프라이머
     up = cds[codon_start - flank:codon_start]
     down = cds[codon_start + 3:codon_start + 3 + flank]
     fwd = up + new_codon + down
     rev = reverse_complement(fwd)
 
-    # ✅ 주변 아미노산과 CDS (±10개)
-    aa_start = max(0, pos - 11)
-    aa_end = min(len(protein_seq), pos + 10)
-    context_protein = protein_seq[aa_start:aa_end]
-
-    cds_start = max(0, codon_start - 30)
-    cds_end = min(len(cds), codon_start + 33)
-    context_cds = cds[cds_start:cds_end]
+    # 시각화용 서열
+    wt_codon = cds[codon_start:codon_start + 3]
+    wt_dna_context = cds[codon_start - 10:codon_start + 13]
+    wt_protein_context = protein_seq[pos - 11: pos + 10]
 
     return {
-        "forward_primer": fwd,
-        "reverse_primer": rev,
+        "forward_primer": highlight(fwd, flank, 3),
+        "reverse_primer": highlight(rev, len(rev) - flank - 3, 3),
         "tm": round(calc_tm(fwd), 1),
         "gc_percent": round(gc_content(fwd), 1),
-        "context_protein": context_protein,
-        "context_cds": context_cds
+        "wildtype_codon": wt_codon,
+        "wildtype_dna_context": highlight(wt_dna_context, 10, 3),
+        "wildtype_protein_context": highlight(wt_protein_context, 10, 1)
     }
 
 @app.get("/primer")
