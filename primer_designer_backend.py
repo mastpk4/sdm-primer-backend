@@ -1,4 +1,4 @@
-# Final backend with UniProt canonical protein matching
+# Final backend with UniProt canonical protein matching (with traceback)
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -125,6 +125,8 @@ def primer_endpoint(
         cds = get_cds(mrna_id)
         primer = design_primer(cds, protein_seq, mutation)
     except Exception as e:
+        import traceback
+        traceback.print_exc()  # ✅ 로그에 에러 내용 출력
         raise HTTPException(status_code=500, detail=str(e))
     return {
         "uniprot_id": uniprot_id,
